@@ -28,7 +28,8 @@ import random
 
 import torch
 
-from pytorch_pretrained_bert import BertTokenizer
+# from pytorch_pretrained_bert import BertTokenizer TODO: Remove when open sourcing code
+from bert_sb import BertTokenizer
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 
 from tensorboardX import SummaryWriter
@@ -228,9 +229,9 @@ class MultiTaskLearning:
 
         self.data_loaded = True
 
-    def run(self):
+    def train(self):
         """
-        Runs the Multitask learning model with the following settings
+        Trains the Multitask learning model with the following settings
         as defined in the run config:
         sampling_mode - The way in which we choose the next task in each step over
                         the epoch, sampling from the task_weightings distribution
@@ -308,7 +309,8 @@ class MultiTaskLearning:
                                                  warmup_proportion=self.run_config["warmup_prop"])
 
         # Initialise the global step and generate task_ids according to our sampling mode, then start the training loop
-        global_step = 0
+        train_global_step = {task_name: 0 for task_name in self.task_names}
+        eval_global_step = {task_name: 0 for task_name in self.task_names}
         task_ids = get_task_ids(task_weightings, num_epochs, steps_per_epoch, self.sampling_mode)
         # task_names = np.vectorize(lambda task_id: self.task_names[task_id])(task_ids)  # To map onto names instead of ids
         # task_order = {'Epoch ' + str(epoch): task_names[epoch] for epoch in range(num_epochs)}
@@ -336,9 +338,13 @@ class MultiTaskLearning:
                 train_losses[task_name] += loss.mean().item()
                 n_train_examples += input_ids.size(0)
                 n_train_steps += 1
-                global_step += 1
+                train_global_step[task_name] += 1
                 if step % self.run_config["steps_to_log"] == 0:
                     LOGGER.info(f"Task: {task_name} - Step: {step} - Loss: {train_losses[task_name]/n_train_steps}")
+
+                # Log training batch statistics to tensorboard
+                self.writer.add_scalars('loss', {task_name + '_train_loss': train_losses[task_name]/n_train_steps},
+                                        train_global_step[task_name])
 
             # After the epoch, normalise the accumulated training losses and set eval accs/losses to 0 for updating
             train_losses = {task_name: train_loss / n_train_steps for task_name, train_loss in train_losses.items()}
@@ -347,26 +353,19 @@ class MultiTaskLearning:
 
             # Run the evaluation method for each of the tasks
             for task_id, task_name in enumerate(self.task_names):
-                eval_accs[task_name], eval_losses[task_name] = self.evaluate_model(task_id, global_step)
+                eval_accs[task_name], eval_losses[task_name], n_steps = self.evaluate_model(task_id,
+                                                                                            eval_global_step[task_name])
+                eval_global_step[task_name] += n_steps
 
             # Log the results
-            result_dict = {'global_step': global_step, 'train_loss': train_losses,
+            result_dict = {'train_steps': sum(train_global_step.values()), 'train_loss': train_losses,
                            'eval_losses': eval_losses, 'eval_accuracies': eval_accs}
             LOGGER.info(f"End of epoch {epoch+1} - Results: {result_dict}")
 
-            # TODO: save evaluation with settings to some file? e.g writer.add_text, or leave in comment string?
-            # Add losses and accuracies to tensorboard
-            for task_name in self.task_names:
-                self.writer.add_scalars('loss', {task_name + '_train_loss': train_losses[task_name]}, global_step)
-                self.writer.add_scalars('loss', {task_name + '_eval_loss': eval_losses[task_name]}, global_step)
-                # Load each of the (2,3,4)-class accuracies separately in tensorboard
-                if isinstance(eval_accs[task_name], float):
-                    self.writer.add_scalars('acc', {task_name + '_eval_acc': eval_accs[task_name]}, global_step)
-                elif isinstance(eval_accs[task_name], dict):
-                    self.writer.add_scalars('acc', {'_'.join([task_name, acc_name, '_eval_acc']): eval_acc
-                                            for acc_name, eval_acc in eval_accs[task_name].items()}, global_step)
+        final_loss_train, final_loss_dev, final_acc_dev = train_losses[-1], eval_losses[-1], eval_accs[-1]
+        return final_loss_train, final_loss_dev, final_acc_dev
 
-    def evaluate_model(self, task_id, global_step):
+    def evaluate_model(self, task_id, eval_global_step):
         """
         Evaluation logic for the Multitask learning model
 
@@ -374,14 +373,8 @@ class MultiTaskLearning:
         ----------
         task_id : int
             The id (starting from 0) of the corresponding task
-        task_name : str
-            Name of the task
-        global_step : int
-            Global step i.e how many steps the optimiser has done
-            so far overall (across epochs)
-        train_loss : float
-            The training loss so far for the current task (to write
-            to the self.writer for tensorboard)
+        eval_global_step : int
+            Global step for number of evaluations taken so far (on previous epochs)
 
         Returns
         -------
@@ -535,6 +528,10 @@ class MultiTaskLearning:
                     y_true = np.concatenate([y_true, label_ids.to('cpu').numpy()])
                 n_eval_steps += 1
 
+                # Log evaluation loss to tensorboard
+                self.writer.add_scalars('loss', {task_name + '_eval_loss': eval_loss/n_eval_steps},
+                                        eval_global_step + n_eval_steps)
+
             # Map labels from alphabetical to new labels defined by label_map above
             y_preds = np.vectorize(label_map.get)(y_preds)
             y_true = np.vectorize(label_map.get)(y_true)
@@ -550,6 +547,11 @@ class MultiTaskLearning:
 
             # Normalise the values we have incremented via batching
             eval_loss = eval_loss / n_eval_steps
+
+            # Log evaluation accuracy to tensorboard (+1 since not reporting accuracy per batch)
+            self.writer.add_scalars('acc', {'_'.join([task_name, acc_name, '_eval_acc']): eval_acc
+                                             for acc_name, eval_acc in eval_accuracy.items()},
+                                    eval_global_step + 1)
 
         else:
             eval_loss, eval_accuracy = 0, 0
@@ -571,13 +573,19 @@ class MultiTaskLearning:
                 n_eval_examples += input_ids.size(0)
                 n_eval_steps += 1
 
+                # Log the (normalised) batch statistics to tensorboard
+                self.writer.add_scalars('loss', {task_name + '_eval_loss': eval_loss / n_eval_steps}, 
+                                        eval_global_step + n_eval_steps)
+                self.writer.add_scalars('acc', {task_name + '_eval_acc': eval_accuracy / n_eval_examples}, 
+                                        eval_global_step + n_eval_steps)
+
             # Normalise the values we have incremented via batching
             eval_loss = eval_loss / n_eval_steps
             eval_accuracy = eval_accuracy / n_eval_examples
-        return eval_accuracy, eval_loss
+        return eval_accuracy, eval_loss, n_eval_steps
 
 
 if __name__ == '__main__':
     LOGGER.info(f"You entered run config: {RUN_CONFIG}")
     MTLModel = MultiTaskLearning(run_config=RUN_CONFIG)
-    MTLModel.run()
+    MTLModel.train()

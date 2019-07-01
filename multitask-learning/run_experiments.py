@@ -26,7 +26,7 @@ def hp_list_cleaner(hp_list):
     """
     hp_list_cleaned = []
     for hp_tuple in hp_list:
-        sampling_mode, tasks = hp_tuple
+        tasks, sampling_mode = hp_tuple
         # Input logic so that we dont test all sampling modes if we only have one task (only sequential and random)
         num_tasks = len(tasks.split(", "))
         if num_tasks == 1 and sampling_mode != 'sequential':
@@ -38,18 +38,19 @@ def hp_list_cleaner(hp_list):
 
 if __name__ == '__main__':
     # TODO: Have a think about which hyperparameters to test (cf. MultiTaskLearning)
-    hparams_to_test = {'sampling_mode': ['sequential', 'random', 'prop', 'sqrt', 'square', 'anneal'],
-                       'tasks': ['SST-2', 'IMDB', 'SST-2, IMDB', 'SemEval_QA_M', 'SST-2, SemEval_QA_M']
+    hparams_to_test = {'tasks': ['SST-2', 'SemEval_QA_M', 'SST-2, SemEval_QA_M', 'IMDB', 'SST-2, IMDB'],
+                       'sampling_mode': ['sequential', 'random', 'prop', 'sqrt', 'square', 'anneal']
                        }
-
+    metrics_to_report = ['final_loss_train', 'final_loss_dev', 'final_acc_dev']
     # Create an experiment log if one is not already present
+    if not RUNS_FOLDER.is_dir():
+        RUNS_FOLDER.mkdir()
     if not EXPERIMENT_LOG.is_file():
-        pd.DataFrame(columns=hparams_to_test.keys()).to_csv(EXPERIMENT_LOG)
+        pd.DataFrame(columns=list(hparams_to_test.keys()) + metrics_to_report).to_csv(EXPERIMENT_LOG)
 
     total_experiments_so_far = len(pd.read_csv(EXPERIMENT_LOG))
-
     hp_list_cleaned = hp_list_cleaner(itertools.product(*hparams_to_test.values()))
-    for experiment_num, (sampling_mode, tasks) in enumerate(hp_list_cleaned):
+    for experiment_num, (tasks, sampling_mode) in enumerate(hp_list_cleaned):
         # Allow us to pick up where we left off by skipping over experiments we have already run
         if experiment_num < total_experiments_so_far:
             continue
@@ -63,9 +64,12 @@ if __name__ == '__main__':
 
         LOGGER.info(f"Running experiment with run config: {run_config}")
         MTLModel = MultiTaskLearning(run_config=run_config)
-        MTLModel.run()
+        final_loss_train, final_loss_dev, final_acc_dev = MTLModel.train()
 
         # Mark the experiment as done in the log (All metrics etc stored in the tensorboard log not in csv)
         with open(EXPERIMENT_LOG, 'a') as experiment_log:
-            experiment = pd.DataFrame(run_config, index=[experiment_num])
+            experiment = pd.DataFrame({'sampling_mode': sampling_mode, 'tasks': tasks,
+                                       'final_loss_train': final_loss_train,
+                                       'final_loss_dev': final_loss_dev,
+                                       'final_acc_dev': final_acc_dev}, index=[experiment_num])
             experiment.to_csv(experiment_log, header=False)

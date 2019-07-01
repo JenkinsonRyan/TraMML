@@ -115,8 +115,6 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         tokens_b = None
         if example.text_b:
             tokens_b = tokenizer.tokenize(example.text_b)
-
-        if tokens_b:
             # Modifies `tokens_a` and `tokens_b` in place so that the total
             # length is less than the specified length.
             # Account for [CLS], [SEP], [SEP] with "- 3"
@@ -126,35 +124,13 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
             if len(tokens_a) > max_seq_length - 2:
                 tokens_a = tokens_a[:(max_seq_length - 2)]
 
-        # Below could definitely be made more efficient without for looping e.g
-        # if not tokens_b:
-        #     # Account for [CLS] and [SEP] tokens in the "+2"
-        #     tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
-        #     segment_ids = [0] * (len(tokens_a) + 2)
-        # else:
-        #     tokens = ["[CLS]"] + tokens_a + ["[SEP]"] + tokens_b + ["[SEP]"]
-        #     segment_ids = [0] * (len(tokens_a) + 2) + \
-        #                   [1] * (len(tokens_b) + 1)
-        tokens = []
-        segment_ids = []
-        # Start with the [CLS] token with id 0
-        tokens.append("[CLS]")
-        segment_ids.append(0)
-        for token in tokens_a:
-            # Each token in the first sentence has id 0
-            tokens.append(token)
-            segment_ids.append(0)
-        # Add the [SEP] token, also with id 0
-        tokens.append("[SEP]")
-        segment_ids.append(0)
+        # Set up the tokens and put them through the tokenizer
+        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+        segment_ids = [0] * len(tokens)
 
-        # If we have tokens for text_b then append and label with id 1
         if tokens_b:
-            for token in tokens_b:
-                tokens.append(token)
-                segment_ids.append(1)
-            tokens.append("[SEP]")
-            segment_ids.append(1)
+            tokens += tokens_b + ["[SEP]"]
+            segment_ids += [1] * (len(tokens_b) + 1)
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
@@ -163,14 +139,10 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         input_mask = [1] * len(input_ids)
 
         # Zero-pad up to the sequence length. Could be sped up as below:
-        # padding_length = max_seq_length - len(input_ids)
-        # input_ids += [0]*padding_length
-        # input_mask += [0]*padding_length
-        # segment_ids += [0]*padding_length
-        while len(input_ids) < max_seq_length:
-            input_ids.append(0)
-            input_mask.append(0)
-            segment_ids.append(0)
+        padding_length = max_seq_length - len(input_ids)
+        input_ids += [0]*padding_length
+        input_mask += [0]*padding_length
+        segment_ids += [0]*padding_length
 
         # Make sure everything has the right shape
         assert len(input_ids) == max_seq_length

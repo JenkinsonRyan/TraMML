@@ -49,7 +49,7 @@ def convert_to_unicode(text):
         return text
     elif isinstance(text, bytes):
         return text.decode("utf-8", "ignore")
-    elif isinstance(text, int):
+    elif isinstance(text, int) or isinstance(text,float):
         return str(text).encode("utf-8").decode("utf-8")
     else:
         raise ValueError("Unsupported string type: %s" % (type(text)))

@@ -23,7 +23,9 @@ This code will store all the modelling required to build up various BERT models
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
-from pytorch_pretrained_bert import BertAdam, BertModel
+# from pytorch_pretrained_bert import BertAdam, BertModel TODO: Remove comment when open sourcing
+from bert_sb import BertAdam, BertModel
+
 
 # Setup pretrained models to download - typically use bert-base
 MODEL_NAMES = ['bert-base-uncased', 'bert-large-uncased',
@@ -103,7 +105,7 @@ class MultiTaskModel(nn.Module):
                           learning_rate=1e-6, warmup_proportion=0.1,
                           weight_decay=0.0):
         """
-        Prepares Adam optimizer for BERT.
+        Prepares Adam optimizer for BERT. Stolen from KnowledgeBERT and adapted
 
         Parameters
         ----------
@@ -195,8 +197,9 @@ class MultiTaskModel(nn.Module):
             automatically based on the task config.
             If labels is None: return the logits
         """
-        # Get pooled output from Language Model and apply dropout
-        _, pooled_output = self.baseLM(input_ids, segment_ids, attention_mask)
+        # Get pooled output from BERT Model and apply dropout
+        # TODO: final _ is attn_data_list - to remove when open sourcing
+        _, pooled_output, _ = self.baseLM(input_ids, segment_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
         # Forward pass through the head of the corresponding task
         logits = self.heads[task_name](pooled_output)
