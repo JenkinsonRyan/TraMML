@@ -57,7 +57,7 @@ PROCESSORS = {'SST-2': SST2Processor, 'SST-5': SST5Processor,
               'IMDB': IMDBProcessor, 'SemEval_QA_B': SemEval_QA_BProcessor,
               'SemEval_QA_M': SemEval_QA_MProcessor}
 TASK_WEIGHTINGS = ['num_examples_per_task', 'importance']
-SAMPLING_MODES = ['sequential', 'random', 'prop', 'sqrt', 'anneal']
+SAMPLING_MODES = ['sequential', 'random', 'prop', 'sqrt', 'square', 'anneal']
 # TODO: Other sampling modes (potentially): squaring, reverse anneal
 
 class MultiTaskLearning:
