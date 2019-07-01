@@ -23,8 +23,7 @@ This code will store all the modelling required to build up various BERT models
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
-# from pytorch_pretrained_bert import BertAdam, BertModel TODO: Remove comment when open sourcing
-from bert_sb import BertAdam, BertModel
+from pytorch_pretrained_bert import BertAdam, BertModel
 
 
 # Setup pretrained models to download - typically use bert-base
@@ -198,8 +197,7 @@ class MultiTaskModel(nn.Module):
             If labels is None: return the logits
         """
         # Get pooled output from BERT Model and apply dropout
-        # TODO: final _ is attn_data_list - to remove when open sourcing
-        _, pooled_output, _ = self.baseLM(input_ids, segment_ids, attention_mask)
+        _, pooled_output = self.baseLM(input_ids, segment_ids, attention_mask)
         pooled_output = self.dropout(pooled_output)
         # Forward pass through the head of the corresponding task
         logits = self.heads[task_name](pooled_output)

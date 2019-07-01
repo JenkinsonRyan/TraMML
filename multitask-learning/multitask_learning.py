@@ -28,8 +28,7 @@ import random
 
 import torch
 
-# from pytorch_pretrained_bert import BertTokenizer TODO: Remove when open sourcing code
-from bert_sb import BertTokenizer
+from pytorch_pretrained_bert import BertTokenizer
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler
 
 from tensorboardX import SummaryWriter
