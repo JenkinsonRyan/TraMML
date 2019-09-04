@@ -1,0 +1,4 @@
+# Don't track content of the following files
+.vscode
+multitask-learning/.DS_Store
+multitask-learning/runs/
