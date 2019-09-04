@@ -1,7 +1,7 @@
-# LaMoMML - Language Modelling using Multitask and Meta Learning
+# TraMML - Transformers with Multitask and Meta Learning
 Ryan Jenkinson, MSc Project (2019) - An investigation into multitask learning and meta learning for NLU problems, with specific focus on Aspect Based Sentiment Analysis. This project is in industry collaboration with Streetbees.
 
-This project will investigate a multitask learning approach to aspect based sentiment analysis, and investigate whether auxilliary tasks improve the performance of our base language model by supporting the primary task using various defined sampling schemas.
+This project will investigate a multitask learning approach to aspect based sentiment analysis, and investigate whether auxilliary tasks improve the performance of our base language models (which are Transformers) by supporting the primary task using various defined sampling schemas.
 
 This project relies heavily on the amazing work done by the ```pytorch-transformers``` library by HuggingFace (https://github.com/huggingface/pytorch-transformers), and we build additional functionality on top of their models that allow users to easily fine tune their models, but also joint multitask fine tune different tasks.
 
