@@ -20,18 +20,20 @@ used and modified for commercial use:
 https://github.com/huggingface/pytorch-pretrained-BERT/
 This code will store all the modelling required to build up various BERT models
 """
+import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss, MSELoss
 
-from pytorch_pretrained_bert import BertAdam, BertModel
+from pytorch_transformers import BertModel, XLNetModel
+from pytorch_transformers import BERT_PRETRAINED_MODEL_ARCHIVE_MAP, XLNET_PRETRAINED_MODEL_ARCHIVE_MAP
+from pytorch_transformers import BertTokenizer, XLNetTokenizer
+from pytorch_transformers import AdamW, WarmupLinearSchedule
+from pytorch_transformers.modeling_utils import SequenceSummary
+# Setup pretrained models to download - typically use bert-base or xlnet-base
+MODEL_NAMES = list(BERT_PRETRAINED_MODEL_ARCHIVE_MAP.keys()) + list(XLNET_PRETRAINED_MODEL_ARCHIVE_MAP.keys())
 
-
-# Setup pretrained models to download - typically use bert-base
-MODEL_NAMES = ['bert-base-uncased', 'bert-large-uncased',
-               'bert-base-cased', 'bert-large-cased',
-               'bert-base-multilingual-uncased',
-               'bert-base-multilingual-cased', 'bert-base-chinese']
-
+MODELS = {'bert': BertModel, 'xlnet': XLNetModel}
+TOKENIZERS = {'bert': BertTokenizer, 'xlnet': XLNetTokenizer}
 
 class MultiTaskModel(nn.Module):
     """
@@ -45,7 +47,7 @@ class MultiTaskModel(nn.Module):
     task_type : indicates if a task is a primary, secondary or tertiary task. Not used in this class.
     output_type : indicates if task if regression or classification ('REG'/'CLS')
     """
-    def __init__(self, task_configs, model_name_or_config='bert-base-uncased'):
+    def __init__(self, task_configs, model_name_or_config='bert-base-cased'):
         super(MultiTaskModel, self).__init__()
 
         self.task_configs = task_configs
@@ -63,14 +65,19 @@ class MultiTaskModel(nn.Module):
             self.base_model_name = model_name_or_config.split("-")[0]
             if model_name_or_config not in MODEL_NAMES:
                 raise ValueError(f"Please enter a valid model name - you entered {model_name_or_config}")
-            if self.base_model_name == 'bert':
-                self.baseLM = BertModel.from_pretrained(model_name_or_config)
+            self.baseLM = MODELS[self.base_model_name].from_pretrained(model_name_or_config)
 
-        # Store our bert config file
+        # Store our config file
         self.baseLM_config = self.baseLM.config
 
-        # Add dropout layer
-        self.dropout = nn.Dropout(self.baseLM_config.hidden_dropout_prob)
+        # Add the sequence summary module to compute a single vector summary of a sequence hidden states according to:
+        #     summary_type:
+        #         - 'last' => [default] take the last token hidden state (like XLNet)
+        #         - 'first' => take the first token hidden state (like Bert)
+        #         - 'mean' => take the mean of all tokens hidden states (NOT Masked Mean)
+        #         - 'masked_mean' => take the masked mean (masked by the attention weights)
+        self.summary_type = 'first' if self.base_model_name == 'bert' else 'last'
+        self.activation = nn.Tanh()
 
         # Add the heads (just simple linear layers mapping to num_labels)
         self.heads = nn.ModuleDict({task_name:
@@ -81,6 +88,9 @@ class MultiTaskModel(nn.Module):
 
         # Apply initialisation to the heads of the model
         self.heads.apply(self.__init_weights)
+
+        # Get the device the that we are using
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def __init_weights(self, module):
         """
@@ -100,11 +110,12 @@ class MultiTaskModel(nn.Module):
                 module.bias is not None):
             module.bias.data.zero_()
 
-    def prepare_optimizer(self, num_train_optimization_steps,
-                          learning_rate=1e-6, warmup_proportion=0.1,
-                          weight_decay=0.0):
+    def prepare_optimizer_and_scheduler(self, num_train_optimization_steps,
+                                        learning_rate=1e-6, warmup_proportion=0.1,
+                                        weight_decay=0.0, adam_epsilon=1e-8):
         """
-        Prepares Adam optimizer for BERT. Stolen from KnowledgeBERT and adapted
+        Prepares Adam optimizer for our Langauge Model with the new behaviour in pytorch-transformers
+        We have an optimizer and a scheduler
 
         Parameters
         ----------
@@ -120,16 +131,20 @@ class MultiTaskModel(nn.Module):
             = max(learning_rate) = learning_rate input param
         weight_decay : float
             weight decay (L2) for all params except the biases and
-            normalisation layers
+            normalisation layers, default 0.0
+        adam_epsilon : float
+            Epsilon for Adam Optimizer, default 1e-8
 
         Returns
         ------
-        optimizer : BertAdam
-            BertAdam optimizer
+        optimizer : AdamW
+            Adam Optimizer
+        scheduler : WarmupLinearSchedule
+            Warmup Schedule
         """
-        # Prepare optimizer
+        # Prepare optimizer and scheduler (new behaviour in pytorch-transfomers)
         param_list = list(self.baseLM.named_parameters()) + list(self.heads.named_parameters())
-        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+        no_decay = ['bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {'params': [param for name, param in param_list
                         if not any(no_decay_name in name for no_decay_name in no_decay)],
@@ -138,25 +153,28 @@ class MultiTaskModel(nn.Module):
                         if any(no_decay_name in name for no_decay_name in no_decay)],
              'weight_decay': 0.0}
         ]
-
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=learning_rate,
-                             warmup=warmup_proportion,
-                             t_total=num_train_optimization_steps)
-        return optimizer
+        # To reproduce BertAdam specific behavior set correct_bias=False
+        # this avoids correcting bias in Adam (e.g. like in Bert TF repository)
+        correct_bias = False if self.base_model_name == 'bert' else True
+        num_warmup_steps = num_train_optimization_steps * warmup_proportion
+        optimizer = AdamW(optimizer_grouped_parameters, lr=learning_rate,
+                          correct_bias=correct_bias, eps=adam_epsilon)
+        scheduler = WarmupLinearSchedule(optimizer, warmup_steps=num_warmup_steps,
+                                         t_total=num_train_optimization_steps)
+        return optimizer, scheduler
 
     def unfreeze_base_layers(self, base_params_to_unfreeze='all'):
         """
-        Function to automatically freeze certain layers of the base (BERT) model
+        Function to automatically freeze certain layers of the base model
 
         Parameters
         ----------
-        bert_params_to_unfreeze : list or str, optional
+        base_params_to_unfreeze : list or str, optional
             List or str of parameters to unfreeze. It will match any part of the
             parameter name automatically outputted by pytorch. To see the list
             of module names run the following code:
             ```
-            model = BertForMultiTask()
+            model = MultiTaskModel()
             param_names = [name for name, _ in model.named_parameters()]
             ```
             Note that the parameter names are separated/indexed by full stops
@@ -173,16 +191,16 @@ class MultiTaskModel(nn.Module):
 
     def forward(self, input_ids, segment_ids, attention_mask, task_name, labels=None):
         """
-        The forward pass for the BertForMultiTask module
+        The forward pass for the MultiTaskModel module
 
         Parameters
         ----------
         input_ids : tensor
-            PyTorch tensor of IDs as is compatable with BERT. Lookup ID via bert vocab
+            PyTorch tensor of IDs
         segment_ids : tensor
-            PyTorch tensor of segment IDs as is compatable with BERT. 0 = text_a, 1 = text_b
+            PyTorch tensor of segment IDs - 0 = text_a, 1 = text_b
         attention_mask : tensor
-            PyTorch tensor of the attention mask as is compatable with BERT. Mask of 1's over input text
+            PyTorch tensor of the attention mask -  Mask of 1's over input text
         task_name : str
             Name of the task to forward pass through
         labels : tensor, optional
@@ -196,16 +214,35 @@ class MultiTaskModel(nn.Module):
             automatically based on the task config.
             If labels is None: return the logits
         """
-        # Get pooled output from BERT Model and apply dropout
-        _, pooled_output = self.baseLM(input_ids, segment_ids, attention_mask)
-        pooled_output = self.dropout(pooled_output)
+        # Get outputs from the model
+        model_outputs = self.baseLM(input_ids, segment_ids, attention_mask=attention_mask)
+        # Get the last_hidden_state: ``torch.FloatTensor`` shape ``(batch_size, sequence_length, hidden_size)``
+        sequence_output = model_outputs[0]
+        if task_name == 'NER':
+            pooled_output = sequence_output
+        else:
+            if self.summary_type == 'last':
+                pooled_output = sequence_output[:, -1]
+            elif self.summary_type == 'first':
+                pooled_output = sequence_output[:, 0]
+            elif self.summary_type == 'mean':
+                pooled_output = sequence_output.mean(dim=1)
+            elif self.summary_type == 'masked_mean':
+                # Alternative is to compute a simple (masked) average to pool the output, sum along sequence_length axis and then divide by number of active tokens
+                pooled_output = torch.einsum('ijk, ij -> ik', sequence_output, attention_mask.float())
+                pooled_output /= torch.sum(attention_mask.float(), dim=1)[:, None]
+            pooled_output = self.activation(pooled_output)
         # Forward pass through the head of the corresponding task
         logits = self.heads[task_name](pooled_output)
+        # TODO: New addition to the code online is reshaped logits, does this matter?
 
         if labels is not None:
             if self.task_configs[task_name]["output_type"] == "CLS":
-                loss_fn = CrossEntropyLoss()
-                loss = loss_fn(logits, labels)
+                # We have to ignore the 0's in the valid_output so that they dont contribute to the gradient
+                # This is only relevant for the NER task, else we set it to the default for PyTorch, which is -100
+                ignore_index = -1 if task_name == 'NER' else -100
+                loss_fn = CrossEntropyLoss(ignore_index=ignore_index)
+                loss = loss_fn(logits.view(-1, self.task_configs[task_name]['num_labels']), labels.view(-1))
                 return loss, logits
             elif self.task_configs[task_name]["output_type"] == "REG":
                 loss_fn = MSELoss()
